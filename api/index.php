@@ -18,6 +18,15 @@ function panggilApi($url) {
 // --- 1. AMBIL LIST PRODUK ---
 $listProdukUrl = "$baseUrl/list_product?api_key=$apiKey";
 $dataProduk = panggilApi($listProdukUrl);
+// TAMBAHKAN 3 BARIS INI UNTUK DEBUG
+echo "<pre>";
+print_r($dataProduk);
+exit;
+// ---
+
+$produkList = [];
+// ... sisa kode
+
 
 // Kita asumsikan data produk ada di dalam $dataProduk['data']
 // Sesuaikan 'data' jika struktur JSON-nya berbeda
