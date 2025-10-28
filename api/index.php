@@ -1,142 +1,153 @@
-
 <?php
 // --- PENGATURAN ---
 $apiKey = "6A225EC0-2922-4252-8204-C7C00A3DA0E5";
 $baseUrl = "https://panel.khfy-store.com/api_v2";
 $baseUrl_v3 = "https://panel.khfy-store.com/api_v3";
 
-// Fungsi helper untuk memanggil API menggunakan cURL
+// Fungsi helper API (tidak berubah)
 function panggilApi($url) {
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
-    // Tambahkan timeout untuk mencegah hang jika API lambat
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10); // Timeout koneksi 10 detik
-    curl_setopt($ch, CURLOPT_TIMEOUT, 30); // Timeout total 30 detik
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
     $response = curl_exec($ch);
-    $error = curl_error($ch); // Ambil pesan error cURL jika ada
+    $error = curl_error($ch);
     curl_close($ch);
-    
-    if ($error) {
-        // Jika ada error cURL, kembalikan array error
-        return ['error' => "cURL Error: " . $error];
-    }
-    
+    if ($error) return ['error' => "cURL Error: " . $error];
     return json_decode($response, true);
 }
 
-// Inisialisasi variabel pesan
+// Inisialisasi variabel
 $pesanStok = "";
 $pesanTransaksi = "";
 $pesanHistory = "";
 
-// --- 0. PROSES CEK STOK AKRAB ---
+// --- Cek Stok Akrab (tidak berubah) ---
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['action'] == 'cek_stok') {
     $stokUrl = "$baseUrl_v3/cek_stock_akrab?api_key=$apiKey";
     $hasilStok = panggilApi($stokUrl);
-    
-    if (isset($hasilStok['error'])) {
-        $pesanStok = "Gagal menghubungi API Cek Stok: " . $hasilStok['error'];
-    } elseif (isset($hasilStok['message'])) {
-        $pesanStok = $hasilStok['message'];
-    } elseif (isset($hasilStok['data']['stock'])) {
-        $pesanStok = "Stok Akrab Saat Ini: " . $hasilStok['data']['stock'];
-    } elseif (!empty($hasilStok)) {
-        $pesanStok = "Info Stok: <pre>" . htmlspecialchars(json_encode($hasilStok, JSON_PRETTY_PRINT)) . "</pre>";
-    } else {
-        $pesanStok = "Gagal mengambil info stok atau format tidak dikenal.";
-    }
+    // (Logika pesan stok tidak berubah)
+    if (isset($hasilStok['error'])) { $pesanStok = "Gagal: " . $hasilStok['error']; }
+    elseif (isset($hasilStok['message'])) { $pesanStok = $hasilStok['message']; }
+    elseif (isset($hasilStok['data']['stock'])) { $pesanStok = "Stok Akrab Saat Ini: " . $hasilStok['data']['stock']; }
+    else { $pesanStok = "Info Stok: <pre>" . htmlspecialchars(json_encode($hasilStok, JSON_PRETTY_PRINT)) . "</pre>"; }
 }
 
-// --- 1. AMBIL LIST PRODUK & KELOMPOKKAN ---
+// --- Ambil List Produk & Kelompokkan (MODIFIKASI BESAR DI SINI) ---
 $listProdukUrl = "$baseUrl/list_product?api_key=$apiKey";
 $dataProduk = panggilApi($listProdukUrl);
 
 $produkList = [];
-$produkGrouped = []; // Array baru untuk menyimpan produk per grup
-$deskripsiMap = []; // Sekarang menyimpan deskripsi DAN harga
+$produkGrouped = []; // Struktur: ['Kategori Utama']['Sub Kategori'][] = $produk
+$deskripsiMap = []; // Struktur: ['kode_produk'] = ['deskripsi', 'harga', 'harga_formatted']
+
+// Nama sub-kategori Akrab Bulanan yang diinginkan
+$akrabBulananSubs = ['Supermini', 'Mini', 'Big', 'Jumbo v2', 'Jumbo', 'Megabig'];
+$flexmaxSubs = []; // Akan diisi otomatis
 
 if (isset($dataProduk['error'])) {
      echo "Gagal menghubungi API List Produk: " . $dataProduk['error'];
 } elseif (isset($dataProduk['data']) && is_array($dataProduk['data'])) {
     $produkList = $dataProduk['data'];
     
-    // Logika Pengelompokan (Sesuaikan prefix ini sesuai produk Anda)
+    // Kata kunci untuk filter Bonus Akrab
+    $bonusAkrabKeywords = ['Bonus Akrab L', 'Bonus Akrab XL', 'Bonus Akrab XXL'];
+
     foreach ($produkList as $produk) {
-        $kode = $produk['kode_produk'] ?? '';
         $nama = $produk['nama_produk'] ?? 'Produk Tidak Dikenal';
+        $kode = $produk['kode_produk'] ?? '';
         $desc = $produk['deskripsi'] ?? 'Tidak ada deskripsi.';
         $harga = $produk['harga_final'] ?? 0;
         $isGangguan = $produk['gangguan'] ?? 0;
         $isKosong = $produk['kosong'] ?? 0;
 
-        // Tentukan Kategori Berdasarkan Awal Kode Produk
-        $kategori = "Lainnya"; // Default
-        if (strpos($kode, 'BPA') === 0) { // Awalan BPA untuk Akrab
-            $kategori = "Kartu Akrab";
-        } elseif (strpos($kode, 'XLA') === 0 || strpos($kode, 'AX') === 0) { // Awalan XL atau AX
-            $kategori = "XL / Axis";
-        } elseif (strpos($kode, 'ID') === 0) { // Awalan ID untuk Indosat
-             $kategori = "Indosat";
-        } elseif (strpos($kode, 'TS') === 0 || strpos($kode, 'TD') === 0) { // Awalan TS atau TD untuk Telkomsel
-             $kategori = "Telkomsel";
+        // --- FILTER PRODUK BONUS AKRAB ---
+        $skipProduk = false;
+        foreach ($bonusAkrabKeywords as $keyword) {
+            if (stripos($nama, $keyword) === 0) { // Cek jika nama dimulai dengan keyword
+                $skipProduk = true;
+                break; // Keluar dari loop keyword jika sudah ketemu
+            }
         }
-        // Tambahkan kondisi 'elseif' lain di sini jika ada kategori lain
+        if ($skipProduk) {
+            continue; // Lanjut ke produk berikutnya jika ini adalah Bonus Akrab
+        }
+        // --- AKHIR FILTER ---
+
+        // Tentukan Kategori Utama & Sub Kategori
+        $kategoriUtama = "Lainnya";
+        $subKategori = $nama; // Default sub kategori adalah nama produk itu sendiri
+
+        // Logika Pengelompokan Akrab Bulanan
+        $foundAkrabSub = false;
+        foreach ($akrabBulananSubs as $sub) {
+            if (stripos($nama, $sub) !== false) { // Cek apakah nama mengandung sub kategori
+                $kategoriUtama = "Akrab Bulanan";
+                $subKategori = $sub; // Gunakan nama sub kategori yang ditemukan
+                $foundAkrabSub = true;
+                break;
+            }
+        }
+
+        // Logika Pengelompokan Flexmax (jika bukan Akrab Bulanan)
+        if (!$foundAkrabSub && stripos($kode, 'FLEXMAX') === 0) { // Cek awalan KODE
+            $kategoriUtama = "Flexmax";
+            // Untuk Flexmax, subkategori tetap nama produknya
+        }
+        
+        // Anda bisa tambahkan logika 'elseif' lain di sini untuk kategori utama lainnya
 
         // Masukkan produk ke grupnya
-        $produkGrouped[$kategori][] = $produk;
+        // Pastikan array diinisialisasi
+        if (!isset($produkGrouped[$kategoriUtama])) {
+            $produkGrouped[$kategoriUtama] = [];
+        }
+         // Kita tidak lagi pakai subkategori di array PHP, langsung list produk per kategori utama
+        $produkGrouped[$kategoriUtama][] = $produk; 
         
         // Simpan deskripsi DAN harga ke map
         $deskripsiMap[$kode] = [
             'deskripsi' => $desc,
-            'harga' => $harga, // Simpan harga di sini
-            'harga_formatted' => "Rp " . number_format($harga) // Simpan format harga juga
+            'harga' => $harga,
+            'harga_formatted' => "Rp " . number_format($harga)
         ];
     }
     
-    // Urutkan grup berdasarkan nama kategori (opsional)
+    // Urutkan kategori utama
     ksort($produkGrouped);
+    // Urutkan produk dalam setiap kategori berdasarkan nama (opsional)
+    foreach ($produkGrouped as $kategori => &$produksDalamGrup) {
+        usort($produksDalamGrup, function($a, $b) {
+            return strcmp($a['nama_produk'] ?? '', $b['nama_produk'] ?? '');
+        });
+    }
+    unset($produksDalamGrup); // Hapus referensi
 
 } else {
     echo "Gagal mengambil daftar produk atau format data tidak sesuai. Response API: <pre>" . htmlspecialchars(print_r($dataProduk, true)) . "</pre>";
 }
 
-// --- 2. PROSES TRANSAKSI ---
+// --- Proses Transaksi (tidak berubah) ---
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['action'] == 'beli_produk' && isset($_POST['kode_produk'], $_POST['tujuan'])) {
-    
     $kodeProduk = $_POST['kode_produk'];
     $tujuan = $_POST['tujuan'];
-    $reffId = "trx-" . uniqid(); 
-    
-    $trxUrl = "$baseUrl/trx?produk=$kodeProduk&tujuan=$tujuan&reff_id=$reffId&api_key=$apiKey";
-    $hasilTrx = panggilApi($trxUrl);
-    
-    if (isset($hasilTrx['error'])) {
-        $pesanTransaksi = "❌ Gagal menghubungi API Transaksi: " . $hasilTrx['error'];
-    } elseif (isset($hasilTrx['status']) && $hasilTrx['status'] == 'success') {
-        $pesanTransaksi = "✅ Transaksi Berhasil Dikirim! (Ref ID: $reffId)";
-        
-        // --- 3. PANGGIL API HISTORY (Tetap cara lama untuk sekarang) ---
-        sleep(2); // Beri jeda sedikit lebih lama
-        $historyUrl = "$baseUrl/history?api_key=$apiKey&refid=$reffId";
-        $hasilHistory = panggilApi($historyUrl);
-        
-        if (isset($hasilHistory['error'])) {
-             $pesanHistory = "Gagal menghubungi API History: " . $hasilHistory['error'];
-        } elseif (isset($hasilHistory['data'][0])) {
-            $history = $hasilHistory['data'][0];
-            $status = $history['status'] ?? 'Tidak diketahui';
-            $catatan = $history['catatan'] ?? 'Tidak ada catatan';
-            
-            $pesanHistory = "<strong>Status Pesanan:</strong> $status <br> <strong>Catatan:</strong> $catatan";
-        } else {
-            $pesanHistory = "Belum ada history ditemukan untuk Ref ID: $reffId. Coba cek beberapa saat lagi.";
-        }
-        
+    if (empty($kodeProduk)) {
+         $pesanTransaksi = "❌ Transaksi Gagal: Anda belum memilih produk spesifik.";
     } else {
-        $pesanError = $hasilTrx['message'] ?? $hasilTrx['msg'] ?? 'Error tidak diketahui dari API.';
-        $pesanTransaksi = "❌ Transaksi Gagal: $pesanError";
+        $reffId = "trx-" . uniqid(); 
+        $trxUrl = "$baseUrl/trx?produk=$kodeProduk&tujuan=$tujuan&reff_id=$reffId&api_key=$apiKey";
+        $hasilTrx = panggilApi($trxUrl);
+        // (Logika pesan transaksi & history tidak berubah)
+        if (isset($hasilTrx['error'])) { $pesanTransaksi = "❌ Gagal: " . $hasilTrx['error']; }
+        elseif (isset($hasilTrx['status']) && $hasilTrx['status'] == 'success') {
+            $pesanTransaksi = "✅ Berhasil! (Ref ID: $reffId)";
+            sleep(2); $historyUrl = "$baseUrl/history?api_key=$apiKey&refid=$reffId"; $hasilHistory = panggilApi($historyUrl);
+            if (isset($hasilHistory['error'])) { $pesanHistory = "Gagal Cek History: " . $hasilHistory['error']; }
+            elseif (isset($hasilHistory['data'][0])) { $h = $hasilHistory['data'][0]; $s = $h['status']??''; $c = $h['catatan']??''; $pesanHistory = "<strong>Status:</strong> $s <br> <strong>Catatan:</strong> $c"; }
+            else { $pesanHistory = "Belum ada history untuk Ref ID: $reffId."; }
+        } else { $err = $hasilTrx['message'] ?? $hasilTrx['msg'] ?? 'Error API.'; $pesanTransaksi = "❌ Gagal: $err"; }
     }
 }
 ?>
@@ -148,6 +159,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['a
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Jual Kuota Internet</title>
     <style>
+        /* (CSS tidak berubah signifikan, hanya penyesuaian kecil jika perlu) */
         body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; }
         .container { max-width: 500px; margin: auto; padding: 20px; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
         .form-group { margin-bottom: 15px; }
@@ -166,37 +178,78 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['a
             display: none;
             margin-top: 15px;
             padding: 15px;
-            background-color: #e9ecef; /* Warna latar sedikit beda */
+            background-color: #e9ecef;
             border-radius: 4px;
             border: 1px solid #ced4da;
             font-size: 0.9em;
             line-height: 1.5;
-            white-space: pre-wrap; /* Jaga format baris baru */
+            white-space: pre-wrap;
         }
-        .description-box strong { /* Styling untuk harga */
+        .description-box .price { /* Styling harga di bawah */
             display: block;
-            margin-bottom: 8px;
+            margin-top: 10px; /* Jarak dari deskripsi */
+            padding-top: 10px; /* Garis pemisah */
+            border-top: 1px solid #ced4da; 
             font-size: 1.1em;
-            color: #0056b3;
-        }
-        .form-cek-stok {
-            margin-bottom: 20px; 
-            padding-bottom: 20px; 
-            border-bottom: 1px solid #eee;
-        }
-        /* Style untuk optgroup */
-        optgroup {
             font-weight: bold;
-            font-style: italic;
             color: #0056b3;
-            background-color: #f0f0f0;
-            padding: 5px 0;
         }
+        .form-cek-stok { margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+        /* Style untuk dropdown produk yang awalnya disembunyikan */
+        #produk-group { display: none; } 
     </style>
 
     <script>
-        // Data deskripsi dan harga sekarang ada di sini
+        // Data produk lengkap yang dikelompokkan
+        const groupedProducts = <?php echo json_encode($produkGrouped); ?>;
+        // Data deskripsi dan harga
         const productDetails = <?php echo json_encode($deskripsiMap); ?>;
+
+        function populateProducts() {
+            const kategoriSelect = document.getElementById("kategori_produk");
+            const produkSelect = document.getElementById("kode_produk");
+            const produkGroupDiv = document.getElementById("produk-group");
+            const descriptionBox = document.getElementById("product-description");
+            const selectedKategori = kategoriSelect.value;
+
+            // Kosongkan dropdown produk dan deskripsi
+            produkSelect.innerHTML = '<option value="">-- Pilih Produk Spesifik --</option>';
+            descriptionBox.style.display = 'none';
+            descriptionBox.innerHTML = '';
+
+            if (selectedKategori && groupedProducts[selectedKategori]) {
+                const productsInCategory = groupedProducts[selectedKategori];
+                
+                productsInCategory.forEach(produk => {
+                    const kode = produk.kode_produk;
+                    const nama = produk.nama_produk;
+                    const isGangguan = produk.gangguan == 1;
+                    const isKosong = produk.kosong == 1;
+                    let labelStatus = "";
+                    let isDisabled = false;
+
+                    if (isGangguan) {
+                        labelStatus = " (Gangguan)";
+                        isDisabled = true;
+                    } else if (isKosong) {
+                        labelStatus = " (Stok Kosong)";
+                        isDisabled = true;
+                    }
+
+                    const option = document.createElement('option');
+                    option.value = kode;
+                    option.textContent = nama + labelStatus;
+                    if (isDisabled) {
+                        option.disabled = true;
+                    }
+                    produkSelect.appendChild(option);
+                });
+
+                produkGroupDiv.style.display = 'block'; // Tampilkan dropdown produk
+            } else {
+                produkGroupDiv.style.display = 'none'; // Sembunyikan jika tidak ada kategori dipilih
+            }
+        }
 
         function showDescription() {
             var selectBox = document.getElementById("kode_produk");
@@ -205,8 +258,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['a
             
             if (productDetails[selectedValue]) {
                 const details = productDetails[selectedValue];
-                // Tampilkan harga DULU, baru deskripsi
-                descriptionBox.innerHTML = `<strong>Harga: ${details.harga_formatted}</strong>${details.deskripsi}`; 
+                // PERUBAHAN POSISI HARGA: Deskripsi dulu, baru harga
+                descriptionBox.innerHTML = `${details.deskripsi}<span class="price">Harga: ${details.harga_formatted}</span>`; 
                 descriptionBox.style.display = 'block';
             } else {
                 descriptionBox.innerHTML = '';
@@ -223,11 +276,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['a
             MODE TESTING! API KEY TERLIHAT PUBLIK.
         </div>
 
-        <?php if ($pesanStok): ?>
-            <div class="message info">
-                <?php echo $pesanStok; ?>
-            </div>
-        <?php endif; ?>
+        <?php if ($pesanStok): ?> <div class="message info"><?php echo $pesanStok; ?></div> <?php endif; ?>
 
         <form action="index.php" method="POST" class="form-cek-stok">
             <input type="hidden" name="action" value="cek_stok">
@@ -237,60 +286,32 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['a
 
         <h2>Pesan Kuota Internet</h2>
 
-        <?php if ($pesanTransaksi): ?>
-            <div class="message <?php echo (strpos($pesanTransaksi, 'Gagal') !== false) ? 'error' : 'success'; ?>">
-                <?php echo $pesanTransaksi; ?>
-            </div>
-        <?php endif; ?>
-
-        <?php if ($pesanHistory): ?>
-            <div class="message info">
-                <?php echo $pesanHistory; ?>
-            </div>
-        <?php endif; ?>
+        <?php if ($pesanTransaksi): ?> <div class="message <?php echo (strpos($pesanTransaksi, 'Gagal') !== false) ? 'error' : 'success'; ?>"><?php echo $pesanTransaksi; ?></div> <?php endif; ?>
+        <?php if ($pesanHistory): ?> <div class="message info"><?php echo $pesanHistory; ?></div> <?php endif; ?>
 
         <form action="index.php" method="POST">
             <input type="hidden" name="action" value="beli_produk"> 
             
             <div class="form-group">
-                <label for="kode_produk">Pilih Produk:</label>
-                <select id="kode_produk" name="kode_produk" required onchange="showDescription()">
-                    <option value="">-- Pilih Produk --</option>
-                    
-                    <?php if (empty($produkGrouped)): ?>
-                        <option value="" disabled>Tidak ada produk yang tersedia</option>
-                    <?php else: ?>
-                        <?php foreach ($produkGrouped as $kategori => $produksDalamGrup): ?>
-                            <optgroup label="<?php echo htmlspecialchars($kategori); ?>">
-                                <?php foreach ($produksDalamGrup as $produk): ?>
-                                    <?php
-                                    $nama = htmlspecialchars($produk['nama_produk'] ?? 'Produk Tidak Dikenal');
-                                    $kode = htmlspecialchars($produk['kode_produk'] ?? '');
-                                    
-                                    // Status produk
-                                    $isGangguan = $produk['gangguan'] ?? 0;
-                                    $isKosong = $produk['kosong'] ?? 0;
-                                    $labelStatus = "";
-                                    $isDisabled = false;
-                                    
-                                    if ($isGangguan == 1) {
-                                        $labelStatus = " (Gangguan)";
-                                        $isDisabled = true;
-                                    } elseif ($isKosong == 1) {
-                                        $labelStatus = " (Stok Kosong)";
-                                        $isDisabled = true;
-                                    }
-                                    ?>
-                                    
-                                    <option value="<?php echo $kode; ?>" <?php echo $isDisabled ? 'disabled' : ''; ?>>
-                                        <?php echo $nama . $labelStatus; // Harga sudah dihapus dari sini ?>
-                                    </option>
-                                    
-                                <?php endforeach; ?>
-                            </optgroup>
-                        <?php endforeach; ?>
+                <label for="kategori_produk">Pilih Jenis Produk:</label>
+                <select id="kategori_produk" name="kategori_produk" required onchange="populateProducts()">
+                    <option value="">-- Pilih Kategori --</option>
+                    <?php foreach (array_keys($produkGrouped) as $kategori): ?>
+                        <option value="<?php echo htmlspecialchars($kategori); ?>">
+                            <?php echo htmlspecialchars($kategori); ?>
+                        </option>
+                    <?php endforeach; ?>
+                     <?php if (empty($produkGrouped)): ?>
+                         <option value="" disabled>Tidak ada kategori tersedia</option>
                     <?php endif; ?>
                 </select>
+            </div>
+
+            <div class="form-group" id="produk-group"> 
+                <label for="kode_produk">Pilih Produk Spesifik:</label>
+                <select id="kode_produk" name="kode_produk" required onchange="showDescription()">
+                    <option value="">-- Pilih Produk Spesifik --</option>
+                    </select>
             </div>
             
             <div id="product-description" class="description-box">
