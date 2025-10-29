@@ -5,169 +5,95 @@ $baseUrl = "https://panel.khfy-store.com/api_v2";
 $baseUrl_v3 = "https://panel.khfy-store.com/api_v3";
 
 function panggilApi($url) {
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-    $response = curl_exec($ch);
-    $error = curl_error($ch);
-    curl_close($ch);
+    $ch = curl_init(); curl_setopt_array($ch, [ CURLOPT_URL => $url, CURLOPT_RETURNTRANSFER => 1, CURLOPT_FOLLOWLOCATION => 1, CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_TIMEOUT => 30 ]);
+    $response = curl_exec($ch); $error = curl_error($ch); curl_close($ch);
     if ($error) return ['error' => "cURL Error: " . $error];
     $decoded = json_decode($response, true);
-    if (json_last_error() !== JSON_ERROR_NONE && !empty($response)) {
-        return ['error' => 'Gagal decode JSON: ' . json_last_error_msg(), 'raw_response' => $response];
-    }
+    if (json_last_error() !== JSON_ERROR_NONE && !empty($response)) { return ['error' => 'Gagal decode JSON: ' . json_last_error_msg(), 'raw_response' => $response]; }
     return $decoded;
 }
 
 // Inisialisasi variabel
-$pesanStok = "";
-$pesanTransaksi = "";
-$pesanHistory = "";
+$pesanStok = ""; $pesanTransaksi = ""; $pesanHistory = "";
 
 // --- Cek Stok Akrab (tidak berubah) ---
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['action'] == 'cek_stok') {
-    $stokUrl = "$baseUrl_v3/cek_stock_akrab?api_key=$apiKey";
-    $hasilStok = panggilApi($stokUrl);
+    $stokUrl = "$baseUrl_v3/cek_stock_akrab?api_key=$apiKey"; $hasilStok = panggilApi($stokUrl);
     if (isset($hasilStok['error'])) { $pesanStok = "Gagal: " . $hasilStok['error']; }
     elseif (isset($hasilStok['message'])) { $pesanStok = $hasilStok['message']; }
     elseif (isset($hasilStok['data']['stock'])) { $pesanStok = "Stok Akrab Saat Ini: " . $hasilStok['data']['stock']; }
     else { $pesanStok = "Info Stok: <pre>" . htmlspecialchars(json_encode($hasilStok, JSON_PRETTY_PRINT)) . "</pre>"; }
 }
 
-// --- Ambil List Produk & Kelompokkan (MODIFIKASI) ---
-$listProdukUrl = "$baseUrl/list_product?api_key=$apiKey";
-$dataProduk = panggilApi($listProdukUrl);
-
-$produkGrouped = [];
-$deskripsiMap = [];
-$produkRawMap = [];
-
+// --- Ambil List Produk & Kelompokkan (PERBAIKAN LOGIKA KATEGORI) ---
+$listProdukUrl = "$baseUrl/list_product?api_key=$apiKey"; $dataProduk = panggilApi($listProdukUrl);
+$produkGrouped = []; $deskripsiMap = []; $produkRawMap = [];
 $akrabBulananSubs = ['Supermini', 'Mini', 'Big', 'Jumbo v2', 'Jumbo', 'Megabig'];
 $bonusAkrabKeywords = ['Bonus Akrab L', 'Bonus Akrab XL', 'Bonus Akrab XXL'];
 $akrabV2Keyword = "Reguler + Lokal"; // Keyword untuk Akrab V2
 
-if (isset($dataProduk['error'])) {
-     echo "Gagal menghubungi API List Produk: " . $dataProduk['error'];
-} elseif (isset($dataProduk['data']) && is_array($dataProduk['data'])) {
+if (isset($dataProduk['error'])) { echo "Gagal menghubungi API List Produk: " . $dataProduk['error']; }
+elseif (isset($dataProduk['data']) && is_array($dataProduk['data'])) {
     foreach ($dataProduk['data'] as $produk) {
         $nama = $produk['nama_produk'] ?? 'Produk'; $kode = $produk['kode_produk'] ?? '';
         $desc = $produk['deskripsi'] ?? ''; $harga = $produk['harga_final'] ?? 0;
         $isGangguan = $produk['gangguan'] ?? 0; $isKosong = $produk['kosong'] ?? 0;
-
-        // --- FILTER PRODUK BONUS AKRAB ---
         $skipProduk = false;
         foreach ($bonusAkrabKeywords as $keyword) { if (stripos($nama, $keyword) === 0) { $skipProduk = true; break; } }
-        if ($skipProduk || empty($kode)) continue; // Lewati jika bonus atau kode kosong
+        if ($skipProduk || empty($kode)) continue;
+        
+        // --- PERBAIKAN LOGIKA KATEGORI ---
+        $kategoriUtama = null; $foundAkrabSub = false;
+        // 1. Cek Akrab Bulanan V1
+        foreach ($akrabBulananSubs as $sub) { if (stripos($nama, $sub) !== false) { $kategoriUtama = "Akrab Bulanan"; $foundAkrabSub = true; break; } }
+        // 2. Cek Akrab Bulanan V2 (MENGANDUNG keyword)
+        if (!$foundAkrabSub && stripos($nama, $akrabV2Keyword) !== false) { $kategoriUtama = "Akrab Bulanan V2"; }
+        // 3. Cek FlexMax (DIMULAI DENGAN keyword, jika belum masuk kategori lain)
+        elseif ($kategoriUtama === null && stripos($nama, 'FlexMax') === 0) { $kategoriUtama = "FlexMax"; }
+        // --- AKHIR PERBAIKAN LOGIKA ---
 
-        // Tentukan Kategori Utama
-        $kategoriUtama = null;
-        $foundAkrabSub = false;
-
-        // 1. Cek Akrab Bulanan V1 berdasarkan Sub Kategori di NAMA
-        foreach ($akrabBulananSubs as $sub) {
-            if (stripos($nama, $sub) !== false) {
-                $kategoriUtama = "Akrab Bulanan";
-                $foundAkrabSub = true;
-                break;
-            }
-        }
-
-        // 2. BARU: Cek Akrab Bulanan V2 berdasarkan awalan NAMA (jika bukan V1)
-        if (!$foundAkrabSub && stripos($nama, $akrabV2Keyword) === 0) {
-             $kategoriUtama = "Akrab Bulanan V2";
-        }
-
-        // 3. Cek FlexMax berdasarkan awalan NAMA (jika bukan Akrab V1 atau V2)
-        // (Pastikan tidak ada produk Akrab V2 yang namanya juga dimulai FlexMax)
-        if ($kategoriUtama === null && stripos($nama, 'FlexMax') === 0) {
-             $kategoriUtama = "FlexMax";
-        }
-
-        // 4. Jika tidak cocok kategori manapun, abaikan
-        if ($kategoriUtama === null) {
-             continue;
-        }
-
-        // Masukkan produk ke grupnya
-        if (!isset($produkGrouped[$kategoriUtama])) {
-            $produkGrouped[$kategoriUtama] = [];
-        }
+        if ($kategoriUtama === null) continue; // Abaikan jika tidak masuk kategori
+        if (!isset($produkGrouped[$kategoriUtama])) { $produkGrouped[$kategoriUtama] = []; }
         $produkGrouped[$kategoriUtama][] = $produk;
-
-        // Simpan detail lengkap produk
-        $deskripsiMap[$kode] = [
-            'deskripsi' => $desc,
-            'harga' => $harga,
-            'harga_formatted' => "Rp " . number_format($harga),
-            'gangguan' => $isGangguan,
-            'kosong' => $isKosong
-        ];
-        $produkRawMap[$kode] = $produk; // Simpan data mentah
+        $deskripsiMap[$kode] = ['deskripsi' => $desc, 'harga' => $harga, 'harga_formatted' => "Rp " . number_format($harga), 'gangguan' => $isGangguan, 'kosong' => $isKosong ];
+        $produkRawMap[$kode] = $produk;
     }
-    ksort($produkGrouped); // Urutkan kategori
-    // Urutkan produk dalam setiap kategori
-    foreach ($produkGrouped as &$produksDalamGrup) {
-        usort($produksDalamGrup, function($a, $b) {
-            return strcmp($a['nama_produk'] ?? '', $b['nama_produk'] ?? '');
-        });
-    } unset($produksDalamGrup);
+    ksort($produkGrouped);
+    foreach ($produkGrouped as &$produksDalamGrup) { usort($produksDalamGrup, function($a, $b) { return strcmp($a['nama_produk'] ?? '', $b['nama_produk'] ?? ''); }); } unset($produksDalamGrup);
 } else { echo "Gagal mengambil daftar produk. Response: <pre>" . htmlspecialchars(print_r($dataProduk, true)) . "</pre>"; }
 
 // --- Proses Transaksi (tidak berubah) ---
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['action'] == 'beli_produk' && isset($_POST['kode_produk'], $_POST['tujuan'])) {
-    // ... (Kode proses transaksi Anda tetap sama persis) ...
-     $kodeProduk = trim($_POST['kode_produk']);
-    $tujuanInput = trim($_POST['tujuan']);
+    $kodeProduk = trim($_POST['kode_produk']); $tujuanInput = trim($_POST['tujuan']);
     $isMulti = isset($_POST['multi_transaksi']) && $_POST['multi_transaksi'] == 'yes';
     $isPreorder = isset($_POST['preorder']) && $_POST['preorder'] == 'yes';
-
     if (empty($kodeProduk)) { $pesanTransaksi = "❌ Gagal: Pilih produk spesifik."; }
     elseif (empty($tujuanInput)) { $pesanTransaksi = "❌ Gagal: Nomor tujuan kosong."; }
     elseif (!isset($produkRawMap[$kodeProduk])) { $pesanTransaksi = "❌ Gagal: Kode produk tidak valid."; }
     else {
-        $selectedProduk = $produkRawMap[$kodeProduk];
-        $isProdukAvailable = ($selectedProduk['gangguan'] == 0 && $selectedProduk['kosong'] == 0);
-
-        if ($isPreorder && !$isProdukAvailable) {
-            $namaProduk = htmlspecialchars($selectedProduk['nama_produk']);
-            $pesanTransaksi = "⏱️ PreOrder untuk '$namaProduk' diterima (Simulasi).";
-        }
-        elseif (!$isPreorder && !$isProdukAvailable) {
-             $namaProduk = htmlspecialchars($selectedProduk['nama_produk']);
-             $statusProblem = ($selectedProduk['gangguan'] == 1) ? "sedang gangguan" : "kosong";
-             $pesanTransaksi = "❌ Gagal: Produk '$namaProduk' saat ini $statusProblem. Coba aktifkan PreOrder.";
-        }
+        $selectedProduk = $produkRawMap[$kodeProduk]; $isProdukAvailable = ($selectedProduk['gangguan'] == 0 && $selectedProduk['kosong'] == 0);
+        if ($isPreorder && !$isProdukAvailable) { $namaProduk = htmlspecialchars($selectedProduk['nama_produk']); $pesanTransaksi = "⏱️ PreOrder '$namaProduk' diterima (Simulasi)."; }
+        elseif (!$isPreorder && !$isProdukAvailable) { $namaProduk = htmlspecialchars($selectedProduk['nama_produk']); $statusProblem = ($selectedProduk['gangguan'] == 1)?"gangguan":"kosong"; $pesanTransaksi = "❌ Gagal: '$namaProduk' saat ini $statusProblem."; }
         else {
-            $nomorTujuanList = [];
-            if ($isMulti) { $nomorTujuanList = array_filter(array_map('trim', explode("\n", $tujuanInput))); }
-            else { $nomorTujuanList = [trim($tujuanInput)]; }
-
+            $nomorTujuanList = []; if ($isMulti) { $nomorTujuanList = array_filter(array_map('trim', explode("\n", $tujuanInput))); } else { $nomorTujuanList = [trim($tujuanInput)]; }
             if (empty($nomorTujuanList)) { $pesanTransaksi = "❌ Gagal: Tidak ada nomor tujuan valid."; }
             else {
                 $hasilMultiTransaksi = []; $totalNomor = count($nomorTujuanList); $nomorKe = 1;
                 foreach ($nomorTujuanList as $tujuan) {
-                    $reffId = "trx-" . uniqid() . "-" . $nomorKe;
-                    $trxUrl = "$baseUrl/trx?produk=$kodeProduk&tujuan=$tujuan&reff_id=$reffId&api_key=$apiKey";
-                    $hasilTrx = panggilApi($trxUrl);
-                    if (isset($hasilTrx['error'])) { $hasilMultiTransaksi[] = "Nomor $tujuan: ❌ API Error ($reffId) - " . $hasilTrx['error']; }
-                    elseif (isset($hasilTrx['status']) && $hasilTrx['status'] == 'success') { $hasilMultiTransaksi[] = "Nomor $tujuan: ✅ OK ($reffId)"; }
-                    else { $err = $hasilTrx['message'] ?? $hasilTrx['msg'] ?? 'Error API'; $hasilMultiTransaksi[] = "Nomor $tujuan: ❌ Gagal - $err ($reffId)"; }
+                    $reffId = "trx-" . uniqid() . "-" . $nomorKe; $trxUrl = "$baseUrl/trx?produk=$kodeProduk&tujuan=$tujuan&reff_id=$reffId&api_key=$apiKey"; $hasilTrx = panggilApi($trxUrl);
+                    if (isset($hasilTrx['error'])) { $hasilMultiTransaksi[] = "No $tujuan: ❌ API Error ($reffId) - ".$hasilTrx['error']; }
+                    elseif (isset($hasilTrx['status']) && $hasilTrx['status'] == 'success') { $hasilMultiTransaksi[] = "No $tujuan: ✅ OK ($reffId)"; }
+                    else { $err = $hasilTrx['message']??$hasilTrx['msg']??'Error API'; $hasilMultiTransaksi[] = "No $tujuan: ❌ Gagal - $err ($reffId)"; }
                     if ($isMulti && $nomorKe < $totalNomor) { sleep(1); } $nomorKe++;
                 }
-                $pesanTransaksi = "Hasil:<br>" . implode("<br>", $hasilMultiTransaksi);
-                $pesanHistory = ($isMulti) ? "History tidak dicek untuk multi." : "";
+                $pesanTransaksi = "Hasil:<br>" . implode("<br>", $hasilMultiTransaksi); $pesanHistory = ($isMulti)?"History tdk dicek.":"";
                  if (!$isMulti && strpos($pesanTransaksi, '✅') !== false) {
                      preg_match('/\(Ref ID: (trx-[a-f0-9-]+)\)/', $pesanTransaksi, $matches);
                      if (isset($matches[1])) {
-                         $reffIdSingle = $matches[1]; sleep(2);
-                         $historyUrl = "$baseUrl/history?api_key=$apiKey&refid=$reffIdSingle";
-                         $hasilHistory = panggilApi($historyUrl);
-                         if (isset($hasilHistory['error'])) { $pesanHistory = "Hist Gagal: " . $hasilHistory['error']; }
-                         elseif (isset($hasilHistory['data'][0])) { $h = $hasilHistory['data'][0]; $s = $h['status']??''; $c = $h['catatan']??''; $pesanHistory = "<strong>Status:</strong> $s <br> <strong>Catatan:</strong> $c"; }
-                         else { $pesanHistory = "Hist belum ada untuk Ref ID: $reffIdSingle."; }
+                         $reffIdSingle = $matches[1]; sleep(2); $historyUrl = "$baseUrl/history?api_key=$apiKey&refid=$reffIdSingle"; $hasilHistory = panggilApi($historyUrl);
+                         if (isset($hasilHistory['error'])) { $pesanHistory = "Hist Gagal: ".$hasilHistory['error']; }
+                         elseif (isset($hasilHistory['data'][0])) { $h=$hasilHistory['data'][0]; $s=$h['status']??''; $c=$h['catatan']??''; $pesanHistory = "<strong>Status:</strong> $s <br> <strong>Catatan:</strong> $c"; }
+                         else { $pesanHistory = "Hist blm ada: $reffIdSingle."; }
                      }
                  }
             }
@@ -213,113 +139,15 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['a
     </style>
 
     <script>
-        // (JavaScript tidak berubah dari versi sebelumnya)
+        // (JavaScript tidak berubah)
         const groupedProducts = <?php echo json_encode($produkGrouped); ?>;
         const productDetails = <?php echo json_encode($deskripsiMap); ?>;
-
-        function formatRupiahJS(angka) {
-            if (typeof angka !== 'number' || isNaN(angka)) { angka = 0; }
-            return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(angka);
-        }
-
-        function populateProducts() {
-             const kategoriSelect = document.getElementById("kategori_produk");
-            const produkSelect = document.getElementById("kode_produk");
-            const produkGroupDiv = document.getElementById("produk-group");
-            const descriptionBox = document.getElementById("product-description");
-            const preorderGroup = document.getElementById("preorder-group");
-            const selectedKategori = kategoriSelect.value;
-            produkSelect.innerHTML = '<option value="">-- Pilih Produk Spesifik --</option>';
-            descriptionBox.style.display = 'none'; descriptionBox.innerHTML = '';
-            preorderGroup.style.display = 'none'; 
-
-            if (selectedKategori && groupedProducts[selectedKategori]) {
-                const productsInCategory = groupedProducts[selectedKategori];
-                productsInCategory.forEach(produk => {
-                    const kode = produk.kode_produk; const nama = produk.nama_produk;
-                    const isGangguan = produk.gangguan == 1; const isKosong = produk.kosong == 1;
-                    let labelStatus = ""; let optionClass = "";
-                    if (isGangguan) { labelStatus = " (Gangguan)"; optionClass = "unavailable"; }
-                    else if (isKosong) { labelStatus = " (Stok Kosong)"; optionClass = "unavailable"; }
-                    const option = document.createElement('option');
-                    option.value = kode; option.textContent = nama + labelStatus;
-                    if (optionClass) { option.classList.add(optionClass); }
-                    produkSelect.appendChild(option);
-                });
-                produkGroupDiv.style.display = 'block'; 
-            } else { produkGroupDiv.style.display = 'none'; }
-            calculateTotalPrice(); 
-        }
-
-        function showDescription() {
-            const selectBox = document.getElementById("kode_produk");
-            const selectedValue = selectBox.value;
-            const descriptionBox = document.getElementById("product-description");
-            const preorderGroup = document.getElementById("preorder-group");
-            const preorderCheck = document.getElementById("preorder_check");
-            
-            descriptionBox.innerHTML = ''; descriptionBox.style.display = 'none';
-            preorderGroup.style.display = 'none'; preorderCheck.disabled = true; preorderCheck.checked = false; 
-            
-            if (productDetails[selectedValue]) {
-                const details = productDetails[selectedValue];
-                const isAvailable = details.gangguan == 0 && details.kosong == 0;
-                descriptionBox.innerHTML = `${details.deskripsi}<span class="price">Harga: ${details.harga_formatted}</span>`; 
-                descriptionBox.style.display = 'block';
-                preorderGroup.style.display = 'block'; 
-                if (!isAvailable) { preorderCheck.disabled = false; } 
-                else { preorderCheck.disabled = true; }
-            }
-            calculateTotalPrice(); 
-        }
-        
-        function calculateTotalPrice() {
-            const produkSelect = document.getElementById("kode_produk");
-            const selectedKode = produkSelect.value;
-            const totalPriceInfo = document.getElementById("total-price-info");
-            const multiCheck = document.getElementById("multi_transaksi_check");
-            const tujuanInput = multiCheck.checked ? document.getElementById("tujuan_multi") : document.getElementById("tujuan_single");
-            totalPriceInfo.style.display = 'none';
-            if (selectedKode && productDetails[selectedKode]) {
-                const harga = productDetails[selectedKode].harga;
-                let quantity = 0;
-                if (multiCheck.checked) {
-                    const lines = tujuanInput.value.split('\n');
-                    quantity = lines.filter(line => line.trim() !== '').length;
-                } else {
-                    quantity = tujuanInput.value.trim() !== '' ? 1 : 0;
-                }
-                if (quantity > 0) {
-                    const total = harga * quantity;
-                    totalPriceInfo.textContent = `Estimasi Total: ${formatRupiahJS(total)} (${quantity} nomor)`;
-                    totalPriceInfo.style.display = 'block';
-                }
-            }
-        }
-
-        function toggleMultiTujuan() {
-            const checkbox = document.getElementById("multi_transaksi_check");
-            const inputSingle = document.getElementById("tujuan_single");
-            const textareaMulti = document.getElementById("tujuan_multi");
-            if (checkbox.checked) {
-                inputSingle.style.display = 'none'; textareaMulti.style.display = 'block';
-                textareaMulti.name = 'tujuan'; inputSingle.name = ''; 
-                inputSingle.required = false; textareaMulti.required = true; 
-            } else {
-                inputSingle.style.display = 'block'; textareaMulti.style.display = 'none';
-                inputSingle.name = 'tujuan'; textareaMulti.name = ''; 
-                inputSingle.required = true; textareaMulti.required = false; 
-            }
-            calculateTotalPrice(); 
-        }
-
-         document.addEventListener('DOMContentLoaded', () => {
-             const inputSingle = document.getElementById('tujuan_single');
-             const textareaMulti = document.getElementById('tujuan_multi');
-             if(inputSingle) inputSingle.addEventListener('input', calculateTotalPrice);
-             if(textareaMulti) textareaMulti.addEventListener('input', calculateTotalPrice);
-         });
-
+        function formatRupiahJS(angka) { if (typeof angka !== 'number' || isNaN(angka)) { angka = 0; } return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(angka); }
+        function populateProducts() { const k=document.getElementById("kategori_produk"),p=document.getElementById("kode_produk"),g=document.getElementById("produk-group"),d=document.getElementById("product-description"),r=document.getElementById("preorder-group"),s=k.value;p.innerHTML='<option value="">-- Pilih Produk Spesifik --</option>',d.style.display='none',d.innerHTML='',r.style.display='none';if(s&&groupedProducts[s]){const t=groupedProducts[s];t.forEach(o=>{const e=o.kode_produk,n=o.nama_produk,l=1==o.gangguan,i=1==o.kosong;let c="",u="";l?(c=" (Gangguan)",u="unavailable"):i&&(c=" (Stok Kosong)",u="unavailable");const a=document.createElement("option");a.value=e,a.textContent=n+c,u&&a.classList.add(u),p.appendChild(a)}),g.style.display='block'}else g.style.display='none';calculateTotalPrice() }
+        function showDescription() { const p=document.getElementById("kode_produk"),s=p.value,d=document.getElementById("product-description"),r=document.getElementById("preorder-group"),c=document.getElementById("preorder_check");d.innerHTML='',d.style.display='none',r.style.display='none',c.disabled=!0,c.checked=!1;if(productDetails[s]){const o=productDetails[s],e=0==o.gangguan&&0==o.kosong;d.innerHTML=`${o.deskripsi}<span class="price">Harga: ${o.harga_formatted}</span>`,d.style.display='block',r.style.display='block',e?c.disabled=!0:c.disabled=!1}calculateTotalPrice() }
+        function calculateTotalPrice() { const p=document.getElementById("kode_produk"),s=p.value,t=document.getElementById("total-price-info"),m=document.getElementById("multi_transaksi_check"),u=m.checked?document.getElementById("tujuan_multi"):document.getElementById("tujuan_single");t.style.display='none';if(s&&productDetails[s]){const o=productDetails[s].harga;let e=0;m.checked?(e=u.value.split('\n').filter(l=>""!==l.trim()).length):e=""!==u.value.trim()?1:0;if(e>0){const l=o*e;t.textContent=`Estimasi Total: ${formatRupiahJS(l)} (${e} nomor)`,t.style.display='block'}} }
+        function toggleMultiTujuan() { const c=document.getElementById("multi_transaksi_check"),i=document.getElementById("tujuan_single"),t=document.getElementById("tujuan_multi");c.checked?(i.style.display='none',t.style.display='block',t.name='tujuan',i.name='',i.required=!1,t.required=!0):(i.style.display='block',t.style.display='none',i.name='tujuan',t.name='',i.required=!0,t.required=!1);calculateTotalPrice() }
+        document.addEventListener('DOMContentLoaded', ()=>{ const i=document.getElementById('tujuan_single'),t=document.getElementById('tujuan_multi');i&&i.addEventListener('input', calculateTotalPrice),t&&t.addEventListener('input', calculateTotalPrice) });
     </script>
 
 </head>
