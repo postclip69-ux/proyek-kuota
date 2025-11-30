@@ -1,6 +1,6 @@
 <?php
 // --- PENGATURAN & Fungsi panggilApi (tidak berubah) ---
-$apiKey = "6A225EC0-2922-4252-8204-C7C00A3DA0E5";
+$apiKey = "947481D5-5AF8-49AC-8F04-09749DF07B4F";
 $baseUrl = "https://panel.khfy-store.com/api_v2";
 $baseUrl_v3 = "https://panel.khfy-store.com/api_v3";
 
